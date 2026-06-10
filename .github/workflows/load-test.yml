@@ -1,0 +1,61 @@
+name: Load Test
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 2 * * *"   # nightly run — continuous performance testing
+  workflow_dispatch:
+    inputs:
+      users:
+        description: "Peak concurrent users"
+        default: "50"
+      duration:
+        description: "Test duration (e.g. 2m, 10m)"
+        default: "2m"
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start target API
+        run: |
+          docker compose up -d --build target-api
+          timeout 60 sh -c 'until curl -sf http://localhost:8000/health; do sleep 2; done'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Locust
+        run: pip install -r requirements.txt
+
+      - name: Run load test
+        run: |
+          mkdir -p reports
+          locust -f locustfiles/ecommerce.py \
+            --headless \
+            --host http://localhost:8000 \
+            -u "${{ github.event.inputs.users || '50' }}" \
+            -r 10 \
+            -t "${{ github.event.inputs.duration || '2m' }}" \
+            --csv reports/ci --csv-full-history \
+            --html reports/ci.html \
+            --only-summary
+
+      - name: SLA gate
+        run: python scripts/check_slas.py reports/ci_stats.csv
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-reports
+          path: reports/
+
+      - name: Tear down
+        if: always()
+        run: docker compose down

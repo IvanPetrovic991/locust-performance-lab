@@ -1,0 +1,15 @@
+# Service Level Agreements enforced by scripts/check_slas.py.
+# The script exits non-zero on any breach, which fails the CI job.
+
+global:
+  p95_ms: 800          # 95th percentile latency budget for the whole test
+  error_rate_pct: 2.0  # max % of failed requests
+  min_rps: 3           # sanity floor — proves the test actually generated load
+
+# Per-endpoint overrides, keyed by "METHOD locust-name".
+endpoints:
+  "POST /checkout":
+    p95_ms: 1500       # payment gateway call is allowed a higher budget
+    error_rate_pct: 3.0
+  "GET /search?q=[term]":
+    p95_ms: 1000       # known cache-miss penalty

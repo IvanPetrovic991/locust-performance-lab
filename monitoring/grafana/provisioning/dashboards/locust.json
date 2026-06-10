@@ -1,0 +1,80 @@
+{
+  "title": "Locust Load Test",
+  "uid": "locust-perf-lab",
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active Users",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
+      "targets": [{ "expr": "locust_users", "refId": "A" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Current RPS",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
+      "targets": [{ "expr": "locust_requests_current_rps{name=\"Aggregated\"}", "refId": "A" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Failures/s",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
+      "targets": [{ "expr": "locust_requests_current_fail_per_sec{name=\"Aggregated\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total Requests",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
+      "targets": [{ "expr": "sum(locust_requests_num_requests{name=\"Aggregated\"})", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Throughput (RPS) by endpoint",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 9 },
+      "targets": [{ "expr": "locust_requests_current_rps{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A" }]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Avg response time (ms) by endpoint",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 9 },
+      "targets": [{ "expr": "locust_requests_avg_response_time{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A" }]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Response time vs load (ms)",
+      "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "locust_requests_avg_response_time{name=\"Aggregated\"}", "legendFormat": "avg", "refId": "A" },
+        { "expr": "locust_requests_median_response_time{name=\"Aggregated\"}", "legendFormat": "median", "refId": "B" },
+        { "expr": "locust_users", "legendFormat": "active users", "refId": "C" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Failures/s over time",
+      "gridPos": { "x": 12, "y": 15, "w": 12, "h": 8 },
+      "targets": [{ "expr": "locust_requests_current_fail_per_sec{name=\"Aggregated\"}", "legendFormat": "failures/s", "refId": "A" }]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Target memory usage (leak hunting)",
+      "gridPos": { "x": 0, "y": 23, "w": 24, "h": 8 },
+      "targets": [{ "expr": "process_resident_memory_bytes{job=\"shopapi\"}", "legendFormat": "target-api RSS", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

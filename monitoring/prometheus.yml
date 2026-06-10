@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: locust
+    static_configs:
+      - targets: ["locust-exporter:9646"]
+
+  - job_name: shopapi
+    static_configs:
+      - targets: ["target-api:8000"]

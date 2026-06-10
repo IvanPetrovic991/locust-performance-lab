@@ -1,0 +1,78 @@
+services:
+  target-api:
+    build: ./target_app
+    ports:
+      - "8000:8000"
+    environment:
+      - SIMULATE_MEMORY_LEAK
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  locust-master:
+    image: locustio/locust:2.32.4
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./locustfiles:/mnt/locust:ro
+      - ./reports:/mnt/reports
+    environment:
+      - LOAD_SHAPE
+      - SOAK_MINUTES
+    command: >
+      -f /mnt/locust/ecommerce.py
+      --master
+      --host http://target-api:8000
+      --class-picker
+    depends_on:
+      target-api:
+        condition: service_healthy
+
+  locust-worker:
+    image: locustio/locust:2.32.4
+    volumes:
+      - ./locustfiles:/mnt/locust:ro
+    environment:
+      - LOAD_SHAPE
+      - SOAK_MINUTES
+    command: >
+      -f /mnt/locust/ecommerce.py
+      --worker
+      --master-host locust-master
+    depends_on:
+      - locust-master
+    deploy:
+      replicas: 2
+
+  # --- optional live monitoring: docker compose --profile monitoring up -d ---
+
+  locust-exporter:
+    image: containersol/locust_exporter:v0.5.0
+    profiles: ["monitoring"]
+    environment:
+      - LOCUST_EXPORTER_URI=http://locust-master:8089
+    depends_on:
+      - locust-master
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["monitoring"]
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
