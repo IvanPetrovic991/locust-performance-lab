@@ -20,7 +20,9 @@ import csv
 import os
 import sys
 
-ERROR_RATE_TOLERANCE_PP = 0.5
+def to_float(value):
+    """Locust writes 'N/A' in percentile columns for zero-request rows."""
+    return float(value) if value not in (None, "", "N/A") else 0.0
 
 
 def load_stats(csv_path):
@@ -30,15 +32,23 @@ def load_stats(csv_path):
             key = "Aggregated" if row["Name"] == "Aggregated" else f"{row['Type']} {row['Name']}"
             requests = int(row["Request Count"])
             rows[key] = {
-                "p95": float(row["95%"] or 0),
-                "rps": float(row["Requests/s"]),
+                "requests": requests,
+                "p95": to_float(row["95%"]),
+                "rps": to_float(row["Requests/s"]),
                 "error_pct": (int(row["Failure Count"]) / requests * 100) if requests else 0.0,
             }
         return rows
 
 
 def pct_change(old, new):
-    return ((new - old) / old * 100) if old else 0.0
+    """Percent change; going from 0 to anything is infinite, not 0%."""
+    if old:
+        return (new - old) / old * 100
+    return 0.0 if new == 0 else float("inf")
+
+
+def fmt_pct(value):
+    return "n/a (base 0)" if value == float("inf") else f"{value:+.1f} %"
 
 
 def main():
@@ -47,6 +57,12 @@ def main():
     parser.add_argument("current_csv")
     parser.add_argument("--p95-tolerance-pct", type=float, default=15.0)
     parser.add_argument("--rps-tolerance-pct", type=float, default=15.0)
+    parser.add_argument("--error-rate-tolerance-pp", type=float, default=0.5,
+                        help="max allowed error-rate increase, in percentage points")
+    parser.add_argument("--min-requests", type=int, default=20,
+                        help="endpoints with fewer requests in either run are reported "
+                             "but not gated — percentiles from a handful of samples are "
+                             "quantization noise, not evidence")
     args = parser.parse_args()
 
     baseline = load_stats(args.baseline_csv)
@@ -66,19 +82,21 @@ def main():
         d_rps = pct_change(b["rps"], c["rps"])
         d_err = c["error_pct"] - b["error_pct"]
 
-        bad = (
+        low_sample = min(b["requests"], c["requests"]) < args.min_requests
+        bad = not low_sample and (
             d_p95 > args.p95_tolerance_pct
             or d_rps < -args.rps_tolerance_pct
-            or d_err > ERROR_RATE_TOLERANCE_PP
+            or d_err > args.error_rate_tolerance_pp
         )
         regressed = regressed or bad
 
+        verdict = "⚪ LOW SAMPLE" if low_sample else ("❌ REGRESSED" if bad else "✅ OK")
         lines.append(
             f"| {key} "
-            f"| {b['p95']:.0f} → {c['p95']:.0f} ms | {d_p95:+.1f} % "
-            f"| {b['rps']:.1f} → {c['rps']:.1f} | {d_rps:+.1f} % "
+            f"| {b['p95']:.0f} → {c['p95']:.0f} ms | {fmt_pct(d_p95)} "
+            f"| {b['rps']:.1f} → {c['rps']:.1f} | {fmt_pct(d_rps)} "
             f"| {b['error_pct']:.2f} → {c['error_pct']:.2f} % "
-            f"| {'❌ REGRESSED' if bad else '✅ OK'} |"
+            f"| {verdict} |"
         )
 
     table = "\n".join(lines)

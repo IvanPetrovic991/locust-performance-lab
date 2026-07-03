@@ -1,6 +1,6 @@
 # ⚡ Locust Performance Lab
 
-[![Load Test](https://img.shields.io/badge/CI-load%20tests%20as%20a%20quality%20gate-2ea44f?logo=githubactions&logoColor=white)](.github/workflows/load-test.yml)
+[![Load Test](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/load-test.yml/badge.svg)](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/load-test.yml)
 [![Locust](https://img.shields.io/badge/Locust-2.x-green?logo=python&logoColor=white)](https://locust.io)
 [![Docker](https://img.shields.io/badge/Docker-distributed%20load%20generation-blue?logo=docker&logoColor=white)](docker-compose.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -33,6 +33,7 @@ detection, and an SLA gate that fails the CI build when latency budgets are brea
 - [Testing your own system](#-testing-your-own-system)
 - [CI/CD pipeline](#-cicd-pipeline)
 - [Interpreting the results](#-interpreting-the-results)
+- [Methodology notes & honest limitations](#-methodology-notes--honest-limitations)
 - [Design decisions](#-design-decisions)
 - [Coming from JMeter?](#-coming-from-jmeter)
 - [Troubleshooting](#-troubleshooting)
@@ -128,7 +129,8 @@ automatically:
 | `make spike` | Resilience to sudden traffic | 20 → **200** → 20 users | Flash sales, TV moments, failover |
 | `make soak` | Degradation over time | 60 users, 30+ min (`SOAK_MINUTES`) | Leaks, connection exhaustion, drift |
 | `make leak-test` | Automated memory-leak hunt | constant load + memory trend gate | Part of every soak |
-| `make compare` | Run-over-run regression diff | any two recorded runs | After code or tuning changes |
+| `make current` | Baseline's twin, recorded separately | 50 users, 5 min | The "after" run for `compare` |
+| `make compare` | Run-over-run regression diff | two runs of the same profile | After code or tuning changes |
 
 Every run also writes an interactive HTML report (`reports/<scenario>.html`) with charts of RPS,
 latency percentiles and failures over time — the artifact you attach to a ticket.
@@ -200,20 +202,29 @@ global:
 endpoints:
   "POST /checkout":
     p95_ms: 1500       # payment gateway call is allowed a higher budget
+    error_rate_pct: 5.0  # ~1% failures injected by design + binomial headroom
   "GET /search?q=[term]":
     p95_ms: 1000       # known cache-miss penalty
 ```
 
 [`scripts/check_slas.py`](scripts/check_slas.py) parses Locust's CSV output, prints a verdict
-table, and **exits non-zero on any breach**. Real output from a smoke run of this repo:
+table, and **exits non-zero on any breach**. An endpoint that has an SLA but produced no results
+row is also a failure — a typo in the config must not silently disable a gate. Real output from
+a run of this repo:
 
 | Scope | Metric | Actual | Limit | Verdict |
 |---|---|---|---|---|
-| POST /checkout | p95 latency | 320 ms | <= 1500 ms | ✅ PASS |
-| GET /search?q=[term] | p95 latency | 780 ms | <= 1000 ms | ✅ PASS |
-| Aggregated | p95 latency | 160 ms | <= 800 ms | ✅ PASS |
+| POST /checkout | p95 latency | 350 ms | <= 1500 ms | ✅ PASS |
+| POST /checkout | error rate | 0.00 % | <= 5.0 % | ✅ PASS |
+| GET /search?q=[term] | p95 latency | 750 ms | <= 1000 ms | ✅ PASS |
+| Aggregated | p95 latency | 220 ms | <= 800 ms | ✅ PASS |
 | Aggregated | error rate | 0.00 % | <= 2.0 % | ✅ PASS |
-| Aggregated | throughput | 4.4 rps | >= 3 rps | ✅ PASS |
+| Aggregated | throughput | 9.0 rps | >= 3 rps | ✅ PASS |
+
+Locust itself runs with `--exit-code-on-error 0` everywhere in this repo: the demo API injects
+~1% payment failures *by design*, so "any failed request = exit 1" (Locust's default) would abort
+every pipeline before its gate ran. Failures are budgeted in the SLAs, not treated as fatal —
+the gate script is the only judge.
 
 Why a script instead of a dashboard? Because a dashboard needs a human, and a human is exactly
 what a nightly pipeline doesn't have. An exit code scales.
@@ -221,25 +232,37 @@ what a nightly pipeline doesn't have. An exit code scales.
 ## 📉 Regression detection
 
 A single run tells you *where you are*; comparing runs tells you *where you're heading*.
-[`scripts/compare_runs.py`](scripts/compare_runs.py) diffs two runs endpoint by endpoint and
-fails when p95 grows, throughput drops, or the error rate worsens beyond a configurable tolerance
-(default 15%):
+[`scripts/compare_runs.py`](scripts/compare_runs.py) diffs two runs **of the same load profile**
+endpoint by endpoint and fails when p95 grows or throughput drops beyond a tolerance (default
+15%), or the error rate worsens by more than 0.5 percentage points (`--error-rate-tolerance-pp`):
 
 ```bash
-make baseline                                   # record the reference run
-make compare CURRENT=reports/smoke_stats.csv    # after a code/tuning change
+make baseline     # record the reference run (50 users, 5 min)
+# ...change code, tune a pool size, upgrade a dependency...
+make current      # the identical profile, recorded separately
+make compare
 ```
 
-```
-| Endpoint           | p95 (base → now) | Δ p95   | rps (base → now) | Δ rps   | Verdict      |
-|--------------------|------------------|---------|------------------|---------|--------------|
-| GET /products/[id] | 67 → 72 ms       | +7.5 %  | 1.2 → 1.5        | +18.9 % | ✅ OK        |
-| POST /checkout     | 340 → 320 ms     | -5.9 %  | 0.2 → 0.2        | -24.9 % | ✅ OK        |
-| Aggregated         | 310 → 160 ms     | -48.4 % | 4.2 → 4.4        | +5.6 %  | ✅ OK        |
-```
+Real output (60-second demo runs, hence the small per-endpoint samples):
 
-Combined with the nightly scheduled run in CI, this turns one-off load tests into **continuous
-performance testing** — regressions surface the day they are introduced, not in production.
+| Endpoint | p95 (base → now) | Δ p95 | rps (base → now) | Δ rps | errors (base → now) | Verdict |
+|---|---|---|---|---|---|---|
+| GET /products/[id] | 64 → 70 ms | +9.4 % | 2.8 → 2.7 | -5.0 % | 0.00 → 0.00 % | ✅ OK |
+| GET /products?page=[n] | 46 → 47 ms | +2.2 % | 3.8 → 3.8 | +2.0 % | 0.00 → 0.00 % | ✅ OK |
+| GET /search?q=[term] | 790 → 750 ms | -5.1 % | 1.7 → 1.7 | +1.8 % | 0.00 → 0.00 % | ✅ OK |
+| POST /auth/login | 130 → 160 ms | +23.1 % | 0.1 → 0.1 | -0.2 % | 0.00 → 0.00 % | ⚪ LOW SAMPLE |
+| POST /checkout | 340 → 350 ms | +2.9 % | 0.3 → 0.3 | -5.2 % | 5.00 → 0.00 % | ⚪ LOW SAMPLE |
+| Aggregated | 310 → 220 ms | -29.0 % | 9.0 → 9.0 | -0.4 % | 0.19 → 0.00 % | ✅ OK |
+
+Note the `LOW SAMPLE` verdicts: endpoints with fewer than `--min-requests` (default 20) samples
+in either run are reported but **not gated** — a ±30% p95 swing computed from 8 requests is
+quantization noise, not evidence. Comparing runs of *different* profiles (say, a 50-user baseline
+against a 10-user smoke) is refused the same way in spirit: it's meaningless by construction, so
+`make compare` defaults to the twin `baseline`/`current` targets.
+
+In CI, every **nightly run automatically compares itself against the previous successful
+nightly** (the report artifact of that run) — regressions surface the day they are introduced,
+not in production.
 
 ## 🧠 Memory leak detection
 
@@ -284,9 +307,10 @@ make leak-test LEAK_MINUTES=3
 | verdict | ✅ **STABLE** — exit 0, because *both* conditions must hold |
 
 Two complementary vantage points are used: the gate measures **black-box** memory via
-`docker stats` (works for any container, no instrumentation needed), while ShopAPI also exposes
-its own RSS on a Prometheus `/metrics` endpoint — the **white-box** curve is visible live in
-Grafana while the soak is still running.
+`docker stats` (no instrumentation needed — but note its "usage" figure includes the page cache,
+so a service that writes files a lot needs the white-box view instead), while ShopAPI also
+exposes its own RSS on a Prometheus `/metrics` endpoint — the **white-box** curve is visible
+live in Grafana while the soak is still running.
 
 ## 📊 Live monitoring
 
@@ -310,9 +334,13 @@ Load generation scales horizontally without touching the test plan:
 make up WORKERS=8        # 8 Locust worker containers on this host
 ```
 
-- **`FastHttpUser`** keeps per-worker overhead low — thousands of RPS per generator.
+- **`FastHttpUser`** keeps per-worker overhead low — a single generator can sustain thousands
+  of RPS. (The screenshots above show ~35 RPS not because the generator is limited, but because
+  80 simulated users with 1–3 s think time *produce* ~35 req/s — the workload models human
+  behavior, it doesn't race the CPU.)
 - The master/worker split is plain Docker Compose, so the same images run distributed across
-  multiple hosts (point `--master-host` at the master) or on Kubernetes via a Helm chart.
+  multiple hosts by pointing `--master-host` at the master. A Kubernetes/Helm setup is on the
+  [roadmap](#-roadmap) — the containers themselves are ready for it.
 - Test scenarios, SLAs, and infrastructure are decoupled (`locustfiles/`, `config/`,
   `docker-compose.yml`) — each scales or swaps independently.
 
@@ -331,17 +359,22 @@ Everything else — distributed workers, shapes, gates, CI, dashboards — works
 
 ## 🔄 CI/CD pipeline
 
-[`.github/workflows/load-test.yml`](.github/workflows/load-test.yml) runs on three triggers:
+[`.github/workflows/load-test.yml`](.github/workflows/load-test.yml) runs on four triggers:
 
 | Trigger | Purpose |
 |---|---|
+| `push` to `main` | Keep the badge honest — every change is load-tested |
 | `pull_request` | Block merges that regress performance |
-| `schedule` (nightly) | Continuous performance testing on the default branch |
+| `schedule` (nightly) | Continuous performance testing **with regression comparison against the previous nightly's artifact** |
 | `workflow_dispatch` | On-demand runs with custom user count & duration |
 
-Each run: builds and health-checks the target → runs Locust headless → executes the SLA gate
-(verdict table lands in the GitHub job summary) → uploads CSV/HTML reports as artifacts. A failed
-SLA is a failed check on the PR — performance becomes a merge requirement, like tests and lint.
+The pipeline has two jobs. First, **the gate scripts themselves are unit-tested** (`pytest`,
+[tests/](tests/)) — the scripts that decide pass/fail deserve tests more than anything else in
+the repo. Then the load test: build and health-check the target → run Locust headless
+(`--exit-code-on-error 0`; the SLA gate is the judge, not Locust's default any-failure exit) →
+SLA gate (verdict table lands in the GitHub job summary) → on nightly runs, regression gate
+against the previous successful nightly → upload CSV/HTML reports as artifacts. A failed gate is
+a failed check on the PR — performance becomes a merge requirement, like tests and lint.
 
 ## 🔍 Interpreting the results
 
@@ -358,6 +391,31 @@ A few principles this repo's design encodes, which apply to any load test:
   yesterday's baseline is actionable. Hence `compare_runs.py` and the nightly run.
 - **Memory verdicts need both slope and magnitude.** Short windows extrapolate noise (41 MB/h
   from a 3-minute stable run); requiring absolute growth *and* rate keeps the leak gate honest.
+
+## ⚖️ Methodology notes & honest limitations
+
+Every load test encodes assumptions; these are this repo's, stated up front — knowing your
+tool's blind spots is part of the craft:
+
+- **Closed workload model.** Users here wait for a response, think, then act — like humans on a
+  webshop. The flip side is *coordinated omission*: when the server slows down, a closed model
+  generates less load, so percentiles read optimistic compared to an open (arrival-rate) model.
+  For queue-buildup scenarios (payment pools, flash sales), an open-model scenario using
+  `constant_throughput` pacing is the right cross-check — it's on the roadmap.
+- **Generator and target share a machine** in the local and CI setups. That is fine for
+  demonstrating the framework and catching regressions, but a *capacity* number you'd defend
+  (e.g. from `make stress`) needs the generator on separate hardware — otherwise you might be
+  measuring the generator's saturation, not the API's.
+- **One run = one sample.** The gates judge single runs against budgets with deliberate headroom
+  (that's what the 15% tolerance and the 5% checkout error budget are). For decisions that need
+  tighter tolerances, repeat runs and compare medians — the framework makes runs cheap precisely
+  so you can afford repetition.
+- **Locust percentiles are bucketed approximations** (coarser at higher values), which is why
+  the `LOW SAMPLE` guard exists and why budgets are not set within one bucket of the observed
+  values.
+- **Absolute millisecond budgets are environment-specific.** The values in `config/slas.yml` are
+  calibrated for GitHub's runners and this demo API; point the suite at your own system and the
+  first thing to do is re-baseline them.
 
 ## 🧩 Design decisions
 
@@ -397,6 +455,7 @@ choosing the right tool and making either one a first-class citizen of the deliv
 ├── scripts/compare_runs.py     # run-over-run regression detection
 ├── scripts/memory_monitor.py   # container memory sampler (docker stats -> CSV)
 ├── scripts/check_memory_leak.py# memory-leak gate (trend analysis on soak runs)
+├── tests/                      # unit tests for the gate scripts (pytest)
 ├── monitoring/                 # Prometheus + Grafana provisioning (dashboard as code)
 ├── .github/workflows/          # load test on every PR + nightly
 ├── docker-compose.yml          # SUT + distributed Locust + monitoring profile
@@ -416,14 +475,21 @@ choosing the right tool and making either one a first-class citizen of the deliv
 
 ## 🗺 Roadmap
 
+- [x] Nightly runs auto-compare against the previous nightly's artifact
+- [ ] Open-workload-model scenario (`constant_throughput`) as a coordinated-omission cross-check
 - [ ] k6 implementation of the same scenarios — tool-agnostic comparison
 - [ ] Kubernetes manifests / Helm chart for cloud-scale load generation
-- [ ] Store nightly baselines as CI artifacts and auto-compare in the PR workflow
 - [ ] Distributed tracing on ShopAPI (OpenTelemetry) correlated via `X-Session-ID`
 
 ## 🧰 Tech stack
 
-Locust 2.x · Python · FastAPI · Docker Compose · Prometheus · Grafana · GitHub Actions
+Locust 2.x · Python · FastAPI · Docker Compose · Prometheus · Grafana · GitHub Actions · pytest
+
+## 👤 Author
+
+**Ivan Petrovic** — performance engineer (JMeter in production by day; this lab is the
+code-first counterpart). GitHub: [@IvanPetrovic991](https://github.com/IvanPetrovic991).
+If you're hiring for performance engineering or want to talk shop, reach out on LinkedIn.
 
 ## 📄 License
 

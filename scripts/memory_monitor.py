@@ -49,13 +49,15 @@ def main():
         while True:
             try:
                 mem = read_memory_mb(args.container)
-            except (subprocess.CalledProcessError, ValueError) as exc:
+            except (subprocess.CalledProcessError, ValueError, FileNotFoundError) as exc:
                 print(f"sample failed, skipping: {exc}", file=sys.stderr)
-                time.sleep(args.interval)
-                continue
+                mem = None
             elapsed = time.time() - start
-            writer.writerow([f"{elapsed:.1f}", f"{mem:.2f}"])
-            f.flush()
+            if mem is not None:
+                writer.writerow([f"{elapsed:.1f}", f"{mem:.2f}"])
+                f.flush()
+            # the duration check must run on the failure path too, or a dead
+            # container leaves this process looping forever in the background
             if args.duration and elapsed >= args.duration:
                 break
             time.sleep(args.interval)

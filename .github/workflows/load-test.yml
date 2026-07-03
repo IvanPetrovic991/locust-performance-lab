@@ -1,6 +1,8 @@
 name: Load Test
 
 on:
+  push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "0 2 * * *"   # nightly run — continuous performance testing
@@ -10,21 +12,51 @@ on:
         description: "Peak concurrent users"
         default: "50"
       duration:
-        description: "Test duration (e.g. 2m, 10m)"
+        description: "Test duration (e.g. 2m, 10m); keep under ~25m or raise timeout-minutes"
         default: "2m"
 
+permissions:
+  contents: read
+  actions: read   # download the previous nightly's artifact for regression comparison
+
+concurrency:
+  group: load-test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # The gate scripts decide pass/fail for every load test — so they get their
+  # own unit-test job. Untested judges are worse than no judges.
+  gate-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Unit-test the gate scripts
+        run: pytest -q
+
   load-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    needs: gate-tests
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Start target API
         run: |
-          docker compose up -d --build target-api
-          timeout 60 sh -c 'until curl -sf http://localhost:8000/health; do sleep 2; done'
+          docker compose up -d --build --wait target-api || {
+            echo "::error::target-api failed its healthcheck — container logs follow"
+            docker compose logs target-api
+            exit 1
+          }
 
       - uses: actions/setup-python@v5
         with:
@@ -33,6 +65,9 @@ jobs:
       - name: Install Locust
         run: pip install -r requirements.txt
 
+      # --exit-code-on-error 0: the demo API injects ~1% payment failures by
+      # design, and locust's default (any failed request = exit 1) would fail
+      # this step before the SLA gate ever ran. The gate is the only judge.
       - name: Run load test
         run: |
           mkdir -p reports
@@ -44,10 +79,28 @@ jobs:
             -t "${{ github.event.inputs.duration || '2m' }}" \
             --csv reports/ci --csv-full-history \
             --html reports/ci.html \
-            --only-summary
+            --only-summary \
+            --exit-code-on-error 0
 
       - name: SLA gate
         run: python scripts/check_slas.py reports/ci_stats.csv
+
+      - name: Regression gate vs previous nightly
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev=$(gh run list --workflow load-test.yml --status success --event schedule \
+                 --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          if [ -z "$prev" ] || [ "$prev" = "null" ]; then
+            echo "No previous successful nightly run — skipping regression comparison."
+            exit 0
+          fi
+          if ! gh run download "$prev" --name load-test-reports --dir baseline; then
+            echo "Previous nightly has no report artifact — skipping regression comparison."
+            exit 0
+          fi
+          python scripts/compare_runs.py baseline/ci_stats.csv reports/ci_stats.csv
 
       - name: Upload reports
         if: always()

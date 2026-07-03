@@ -10,6 +10,9 @@ global:
 endpoints:
   "POST /checkout":
     p95_ms: 1500       # payment gateway call is allowed a higher budget
-    error_rate_pct: 3.0
+    # the API injects ~1% gateway timeouts by design; with the ~100 checkout
+    # samples of a 2-minute CI run, binomial noise makes a 3% budget flaky
+    # (~2% of runs), so the budget leaves honest headroom above the mean
+    error_rate_pct: 5.0
   "GET /search?q=[term]":
     p95_ms: 1000       # known cache-miss penalty

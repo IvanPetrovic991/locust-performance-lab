@@ -19,12 +19,18 @@ Load profile is selected with the LOAD_SHAPE environment variable:
   LOAD_SHAPE=soak     ramp up once, then hold for SOAK_MINUTES (default 30)
 """
 
+import logging
 import os
 import random
+import time
 import uuid
+from urllib.parse import quote_plus
 
 from locust import LoadTestShape, SequentialTaskSet, between, events, tag, task
 from locust.contrib.fasthttp import FastHttpUser
+from locust.exception import StopUser
+
+logger = logging.getLogger(__name__)
 
 SEARCH_TERMS = ["book", "pro", "sport", "home", "electro", "product 1", "product 42"]
 SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "1000"))
@@ -35,11 +41,19 @@ def login(client) -> dict:
 
     X-Session-ID ties every request of one virtual user together, so load test
     traffic can be correlated with the target system's logs and traces.
+
+    Retries a few times, then stops this user: a user that failed to log in
+    would otherwise spend the whole test generating meaningless 401s.
     """
     username = f"user_{random.randint(1, 100_000)}"
-    resp = client.post("/auth/login", json={"username": username, "password": "perf-demo"})
-    token = resp.json().get("token", "") if resp.status_code == 200 else ""
-    return {"Authorization": f"Bearer {token}", "X-Session-ID": uuid.uuid4().hex}
+    for attempt in range(1, 4):
+        resp = client.post("/auth/login", json={"username": username, "password": "perf-demo"})
+        if resp.status_code == 200:
+            token = resp.json().get("token", "")
+            return {"Authorization": f"Bearer {token}", "X-Session-ID": uuid.uuid4().hex}
+        time.sleep(0.5 * attempt)
+    logger.error("login failed 3 times for %s — stopping this user", username)
+    raise StopUser()
 
 
 class BrowsingUser(FastHttpUser):
@@ -68,7 +82,9 @@ class BrowsingUser(FastHttpUser):
     @tag("search")
     def search(self):
         term = random.choice(SEARCH_TERMS)
-        self.client.get(f"/search?q={term}", name="/search?q=[term]")
+        # quote_plus: raw spaces in the query string are invalid HTTP and
+        # newer geventhttpclient versions no longer encode them for us
+        self.client.get(f"/search?q={quote_plus(term)}", name="/search?q=[term]")
 
 
 class CheckoutJourney(SequentialTaskSet):
@@ -76,12 +92,14 @@ class CheckoutJourney(SequentialTaskSet):
 
     @task
     def browse(self):
-        self.client.get("/products?page=1", name="/products?page=[n]")
+        self.client.get("/products?page=1", name="/products?page=[n]", headers=self.user.auth_headers)
 
     @task
     def view_product(self):
         self.product_id = random.randint(1, 200)
-        self.client.get(f"/products/{self.product_id}", name="/products/[id]")
+        self.client.get(
+            f"/products/{self.product_id}", name="/products/[id]", headers=self.user.auth_headers
+        )
 
     @task
     def add_to_cart(self):
@@ -126,6 +144,11 @@ def log_slow_requests(request_type, name, response_time, response_length, except
 # --------------------------------------------------------------------------
 
 _SHAPE = os.getenv("LOAD_SHAPE", "").strip().lower()
+
+if _SHAPE not in ("", "stages", "spike", "soak"):
+    # fail fast: a typo like LOAD_SHAPE=stage would otherwise silently run a
+    # plain constant-load test (or hang forever with 1 user in headless mode)
+    raise ValueError(f"Unknown LOAD_SHAPE={_SHAPE!r} — valid values: stages, spike, soak")
 
 if _SHAPE == "stages":
 

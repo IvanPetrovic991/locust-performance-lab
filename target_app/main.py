@@ -97,9 +97,12 @@ async def health():
 async def metrics():
     """Prometheus-format process metrics, so memory can be watched live in
     Grafana during a soak test (white-box complement to `docker stats`)."""
-    with open("/proc/self/statm") as f:
-        rss_pages = int(f.read().split()[1])
-    rss_bytes = rss_pages * os.sysconf("SC_PAGE_SIZE")
+    try:
+        with open("/proc/self/statm") as f:
+            rss_pages = int(f.read().split()[1])
+        rss_bytes = rss_pages * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        rss_bytes = 0  # /proc is Linux-only; report 0 when run outside Docker
     body = (
         "# TYPE process_resident_memory_bytes gauge\n"
         f"process_resident_memory_bytes {rss_bytes}\n"

@@ -1,2 +1,5 @@
-locust>=2.29
+# pinned to the same version as the locustio/locust image in docker-compose.yml,
+# so CI and local containers exercise identical client behavior
+locust==2.32.4
 PyYAML>=6.0
+

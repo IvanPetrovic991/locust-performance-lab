@@ -49,12 +49,16 @@ def main():
     parser.add_argument("--warmup-pct", type=float, default=20.0)
     args = parser.parse_args()
 
-    samples = load_samples(args.memory_csv)
-    if len(samples) < 10:
-        print(f"ERROR: only {len(samples)} samples — need at least 10 for a meaningful trend.")
-        sys.exit(2)
+    if not 0 <= args.warmup_pct <= 50:
+        parser.error("--warmup-pct must be between 0 and 50 — discarding more than half "
+                     "the run leaves too little data for a trend")
 
+    samples = load_samples(args.memory_csv)
     analyzed = samples[int(len(samples) * args.warmup_pct / 100):]
+    if len(analyzed) < 10:
+        print(f"ERROR: only {len(analyzed)} samples after warm-up exclusion — "
+              "need at least 10 for a meaningful trend. Run longer.")
+        sys.exit(2)
     slope_mb_h = fit_slope(analyzed) * 3600
     total_growth = analyzed[-1][1] - analyzed[0][1]
     window_min = (analyzed[-1][0] - analyzed[0][0]) / 60

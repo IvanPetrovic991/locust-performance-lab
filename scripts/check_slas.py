@@ -19,6 +19,11 @@ import yaml
 PASS, FAIL = "PASS", "FAIL"
 
 
+def to_float(value):
+    """Locust writes 'N/A' in percentile columns for zero-request rows."""
+    return float(value) if value not in (None, "", "N/A") else 0.0
+
+
 def load_stats(csv_path):
     with open(csv_path, newline="") as f:
         return list(csv.DictReader(f))
@@ -28,11 +33,11 @@ def check_row(row, limits):
     """Return a list of (metric, actual, limit, verdict) for one stats row."""
     results = []
 
-    p95 = float(row["95%"] or 0)
+    p95 = to_float(row["95%"])
     requests = int(row["Request Count"])
     failures = int(row["Failure Count"])
     error_pct = (failures / requests * 100) if requests else 0.0
-    rps = float(row["Requests/s"])
+    rps = to_float(row["Requests/s"])
 
     if "p95_ms" in limits:
         verdict = PASS if p95 <= limits["p95_ms"] else FAIL
@@ -59,6 +64,7 @@ def main():
     rows = load_stats(args.stats_csv)
     lines = ["| Scope | Metric | Actual | Limit | Verdict |", "|---|---|---|---|---|"]
     breached = False
+    unmatched = set((slas.get("endpoints") or {}).keys())
 
     for row in rows:
         if row["Name"] == "Aggregated":
@@ -69,12 +75,20 @@ def main():
             if not limits:
                 continue
             scope = key
+            unmatched.discard(key)
 
         for metric, actual, limit, verdict in check_row(row, limits):
             if verdict == FAIL:
                 breached = True
             icon = "✅" if verdict == PASS else "❌"
             lines.append(f"| {scope} | {metric} | {actual} | {limit} | {icon} {verdict} |")
+
+    # An SLA'd endpoint that produced no stats row is a failure, not a free
+    # pass — otherwise a renamed task or a typo in slas.yml silently disables
+    # that SLA forever.
+    for key in sorted(unmatched):
+        breached = True
+        lines.append(f"| {key} | presence | absent from results | must appear | ❌ {FAIL} |")
 
     table = "\n".join(lines)
     print(f"\nSLA report for {args.stats_csv}\n\n{table}\n")
