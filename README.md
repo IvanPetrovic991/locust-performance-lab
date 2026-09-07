@@ -1,7 +1,8 @@
 # ⚡ Locust Performance Lab
 
-[![Load Test](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/load-test.yml/badge.svg)](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/load-test.yml)
-[![Locust](https://img.shields.io/badge/Locust-2.x-green?logo=python&logoColor=white)](https://locust.io)
+[![CI](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/ci.yml)
+[![Nightly performance](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/nightly.yml/badge.svg)](https://github.com/IvanPetrovic991/locust-performance-lab/actions/workflows/nightly.yml)
+[![Locust](https://img.shields.io/badge/Locust-2.46-green?logo=python&logoColor=white)](https://locust.io)
 [![Docker](https://img.shields.io/badge/Docker-distributed%20load%20generation-blue?logo=docker&logoColor=white)](docker-compose.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -97,8 +98,13 @@ analyzing — not just flat green lines.
 
 ## 🚀 Quickstart
 
-Prerequisites: Docker (with Compose v2), Python 3.9+, `make`. Python dependencies are only needed
-for the analysis scripts: `pip install -r requirements.txt`.
+Prerequisites: Docker (with Compose v2) and `make`. Locust itself runs in a container, so nothing
+needs to be installed to run a test.
+
+The gate scripts run on the host and need `PyYAML` on any Python ≥ 3.9 — including the 3.9 that
+still ships with macOS. Installing Locust locally as well (`pip install -r requirements.txt`, for
+running it outside Docker or for editor completion) requires Python ≥ 3.11, which is Locust's own
+floor since 2.46.
 
 ```bash
 # Interactive mode: Locust web UI at http://localhost:8089
@@ -260,9 +266,32 @@ quantization noise, not evidence. Comparing runs of *different* profiles (say, a
 against a 10-user smoke) is refused the same way in spirit: it's meaningless by construction, so
 `make compare` defaults to the twin `baseline`/`current` targets.
 
-In CI, every **nightly run automatically compares itself against the previous successful
-nightly** (the report artifact of that run) — regressions surface the day they are introduced,
-not in production.
+### Why the baseline is a median, not a run
+
+One run is one sample of a noisy process, and a gate built on a single sample is a coin flip. This
+repo learned that the hard way: the nightly job originally compared each run against *the last
+nightly that passed*, which sounds sensible and is actually a ratchet. A passing run is by
+definition a fast one, so the baseline creeps towards the fastest night ever recorded, and every
+ordinary night afterwards reads as a regression — until one lucky-fast run resets it and the cycle
+repeats. The failure pattern in the Actions history is unmistakable in hindsight: a green run,
+then a streak of red, then another green.
+
+The fix is in the statistics, not the tolerance. `compare_runs.py` accepts **any number of
+baseline runs** and reduces them to a per-endpoint median:
+
+```bash
+python scripts/compare_runs.py baselines/*/ci_stats.csv reports/ci_stats.csv
+```
+
+A median tracks the environment instead of chasing its best case, and it cannot ratchet. Runs that
+never exercised an endpoint are excluded from that endpoint's median rather than dragging it
+toward zero, and request counts are merged with `min()` so the low-sample guard stays pessimistic.
+The nightly job feeds it the last five nightlies **regardless of whether they passed** — selecting
+on the outcome is what created the bias in the first place.
+
+Endpoints that appear in only one side of the comparison are surfaced rather than skipped:
+`🆕 NEW (no baseline)` for a freshly added task, `⚪ GONE` for one that stopped firing — a renamed
+task that silently drops its history is a real way to lose a regression signal.
 
 ## 🧠 Memory leak detection
 
@@ -314,17 +343,42 @@ live in Grafana while the soak is still running.
 
 ## 📊 Live monitoring
 
-`make monitoring` adds the observability stack: a Prometheus exporter scrapes the Locust master,
-ShopAPI exposes its own process metrics, and a pre-provisioned Grafana dashboard
-(`http://localhost:3000`, no login needed) shows:
+`make monitoring` adds the observability stack: an exporter turns the Locust master's live stats
+into Prometheus metrics, ShopAPI exposes its own process metrics, and a pre-provisioned Grafana
+dashboard (`http://localhost:3000`, no login needed) shows:
 
 - active users, current RPS, failures/s, total requests (top row)
-- per-endpoint throughput and average response time
-- p50/p95 percentiles overlaid with the user ramp — see latency react to load
+- per-endpoint throughput and **p95 response time**
+- p50/p95 overlaid with the user ramp — see latency react to load
 - target memory usage — the leak-hunting panel
 
 This is the same setup you'd use to watch a production load test: no waiting for the final
 report, problems are visible the moment they start.
+
+### A dashboard that reads zero is worse than no dashboard
+
+[`monitoring/locust_exporter.py`](monitoring/locust_exporter.py) is ~70 lines of stdlib Python
+rather than an off-the-shelf image, and the reason is worth stating because it is the kind of
+thing load-test dashboards get wrong quietly.
+
+The usual choice, `containersol/locust_exporter`, reads a flat `current_response_time_percentile_95`
+key from the master's JSON. Locust does not publish that key — current percentiles arrive nested,
+as `{"current_response_time_percentiles": {"response_time_percentile_0.95": 89}}`. Go's JSON
+decoder leaves an absent field at its zero value, so **the percentile gauges publish `0` forever**
+and a latency dashboard shows a flat, reassuring line. Verified against a live master on both
+v0.5.0 and v0.5.2, and the upstream project's last commit was in 2023. It is also published for
+`linux/amd64` only, so it runs under emulation on any recent Mac.
+
+Percentiles are the entire point of a latency dashboard, so the exporter was replaced instead of
+worked around. The replacement also exposes the distinction Locust makes and most dashboards blur:
+
+| Metric | Window | Use it for |
+|---|---|---|
+| `locust_requests_p95_response_time{name,method}` | cumulative since test start, per endpoint | SLA verdicts — matches the `95%` column of the CSV report |
+| `locust_requests_current_p95_response_time` | 10-second sliding window, whole test | plotting against a user ramp — it rises and decays with load |
+
+Charting the cumulative value against a ramp produces a curve that flattens as the run goes on no
+matter what the system does. That graph looks calm and means nothing.
 
 ## 📐 Scalability
 
@@ -359,22 +413,46 @@ Everything else — distributed workers, shapes, gates, CI, dashboards — works
 
 ## 🔄 CI/CD pipeline
 
-[`.github/workflows/load-test.yml`](.github/workflows/load-test.yml) runs on four triggers:
+Two workflows, split along a deliberate line: **a check whose verdict is deterministic can gate a
+merge and carry a badge; a check that compares noisy samples cannot.**
 
-| Trigger | Purpose |
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) — on `push` to `main`, every
+`pull_request`, and on demand:
+
+| Job | What it does |
 |---|---|
-| `push` to `main` | Keep the badge honest — every change is load-tested |
-| `pull_request` | Block merges that regress performance |
-| `schedule` (nightly) | Continuous performance testing **with regression comparison against the previous nightly's artifact** |
-| `workflow_dispatch` | On-demand runs with custom user count & duration |
+| `lint` | `ruff check` over the whole repo |
+| `gate-tests` | `pytest` over [tests/](tests/) — the scripts that decide pass/fail deserve tests more than anything else in the repo |
+| `load-test` | build and health-check the target → run Locust headless → **SLA gate** |
 
-The pipeline has two jobs. First, **the gate scripts themselves are unit-tested** (`pytest`,
-[tests/](tests/)) — the scripts that decide pass/fail deserve tests more than anything else in
-the repo. Then the load test: build and health-check the target → run Locust headless
-(`--exit-code-on-error 0`; the SLA gate is the judge, not Locust's default any-failure exit) →
-SLA gate (verdict table lands in the GitHub job summary) → on nightly runs, regression gate
-against the previous successful nightly → upload CSV/HTML reports as artifacts. A failed gate is
-a failed check on the PR — performance becomes a merge requirement, like tests and lint.
+The SLA gate judges against the absolute budgets in `config/slas.yml`, not against another run, so
+its verdict does not depend on how busy the runner was. That is what makes it safe to block a
+merge on. Locust runs with `--exit-code-on-error 0` (the gate is the judge, not Locust's default
+any-failure exit), and the verdict table lands in the GitHub job summary.
+
+[`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) — the checks that need history or
+time:
+
+| Job | What it does |
+|---|---|
+| `trend` | 5-minute run → SLA gate → **regression gate against the median of the last five nightlies** (any conclusion — see [why](#why-the-baseline-is-a-median-not-a-run)) |
+| `memory-leak` | soak-lite run through the leak gate, then a **self-test that proves the gate still fires** on a deliberately leaking build |
+
+The nightly's tolerances are deliberately wider than the local defaults (p95 +35%, throughput
+−25%). A hosted runner is shared hardware; the median baseline removes the noise from the
+*reference*, but the run being judged is still a single sample. The gate is calibrated to catch a
+doubling or an error spike, not to resolve a few percent — claiming otherwise would just be a
+flaky gate with a confident name.
+
+The leak self-test is the part worth stealing. `ShopAPI` can be told to leak on demand, so the
+nightly runs the detector against a leaking build and **fails if the detector stays quiet**. A
+gate nobody has watched catch anything is a gate nobody should trust, including its author.
+
+> **Note on the schedule.** GitHub disables `schedule` triggers in public repositories after 60
+> days without repository activity, and re-enabling is manual:
+> `gh workflow enable nightly.yml`. This is documented rather than worked around — the usual
+> workaround is a bot committing noise to keep a timer alive, which trades an honest gap in the
+> history for a dishonest one.
 
 ## 🔍 Interpreting the results
 
@@ -406,10 +484,13 @@ tool's blind spots is part of the craft:
   demonstrating the framework and catching regressions, but a *capacity* number you'd defend
   (e.g. from `make stress`) needs the generator on separate hardware — otherwise you might be
   measuring the generator's saturation, not the API's.
-- **One run = one sample.** The gates judge single runs against budgets with deliberate headroom
-  (that's what the 15% tolerance and the 5% checkout error budget are). For decisions that need
-  tighter tolerances, repeat runs and compare medians — the framework makes runs cheap precisely
-  so you can afford repetition.
+- **One run = one sample.** The SLA gate judges a single run against absolute budgets with
+  deliberate headroom (that's what the 5% checkout error budget is), which is legitimate because
+  the budget doesn't move. Comparing two runs is a different problem: there the noise is on both
+  sides, which is why the nightly compares against a median of recent history rather than against
+  one previous run, and why its tolerances are wider than the local defaults. The run being judged
+  is still a single sample — for a decision that needs to resolve a few percent, repeat the run
+  and compare medians on both sides.
 - **Locust percentiles are bucketed approximations** (coarser at higher values), which is why
   the `LOW SAMPLE` guard exists and why budgets are not set within one bucket of the observed
   values.
@@ -427,6 +508,10 @@ tool's blind spots is part of the craft:
 | Leak gate = slope **and** absolute growth | Either alone produces false alarms on short runs or misses slow leaks |
 | Compose profiles for monitoring | `make up` stays light; the full observability stack is one flag away |
 | `FastHttpUser` by default | Load generators should saturate the target, not themselves |
+| Median baseline, not "the last green run" | Selecting the baseline on its outcome ratchets it towards the fastest run ever recorded |
+| A 70-line exporter instead of a dependency | The off-the-shelf one reports `0` for every percentile; on a latency dashboard that is worse than no dashboard |
+| Wider tolerances in CI than locally | Shared runners are noisy hardware; a gate tuned tighter than the environment's own variance is just a flaky gate |
+| Dependabot on pips, images and actions | A load test running last year's client is testing last year's behaviour — and every bump gets load-tested before merge |
 
 ## 🔄 Coming from JMeter?
 
@@ -448,19 +533,23 @@ choosing the right tool and making either one a first-class citizen of the deliv
 ## 📂 Project structure
 
 ```
-├── locustfiles/ecommerce.py    # user journeys + stress/spike/soak load shapes
-├── target_app/                 # ShopAPI — FastAPI system under test (Docker)
-├── config/slas.yml             # latency / error-rate / throughput budgets
-├── scripts/check_slas.py       # SLA gate (CI exit code + Markdown summary)
-├── scripts/compare_runs.py     # run-over-run regression detection
-├── scripts/memory_monitor.py   # container memory sampler (docker stats -> CSV)
-├── scripts/check_memory_leak.py# memory-leak gate (trend analysis on soak runs)
-├── tests/                      # unit tests for the gate scripts (pytest)
-├── monitoring/                 # Prometheus + Grafana provisioning (dashboard as code)
-├── .github/workflows/          # load test on every PR + nightly
-├── docker-compose.yml          # SUT + distributed Locust + monitoring profile
-├── docs/images/                # screenshots used in this README
-└── Makefile                    # one-command scenarios
+├── locustfiles/ecommerce.py     # user journeys + stress/spike/soak load shapes
+├── target_app/                  # ShopAPI — FastAPI system under test (Docker)
+├── config/slas.yml              # latency / error-rate / throughput budgets
+├── scripts/check_slas.py        # SLA gate (CI exit code + Markdown summary)
+├── scripts/compare_runs.py      # regression detection over a median baseline
+├── scripts/memory_monitor.py    # container memory sampler (docker stats -> CSV)
+├── scripts/check_memory_leak.py # memory-leak gate (trend analysis on soak runs)
+├── tests/                       # unit tests for the gate scripts (pytest)
+├── monitoring/locust_exporter.py# Locust -> Prometheus, percentiles included
+├── monitoring/                  # Prometheus + Grafana provisioning (dashboard as code)
+├── .github/workflows/ci.yml     # lint + gate tests + load test on every push/PR
+├── .github/workflows/nightly.yml# trend comparison + memory-leak gate
+├── .github/dependabot.yml       # weekly pin refresh, load-tested before merge
+├── docker-compose.yml           # SUT + distributed Locust + monitoring profile
+├── pyproject.toml               # ruff + pytest configuration
+├── docs/images/                 # screenshots used in this README
+└── Makefile                     # one-command scenarios
 ```
 
 ## 🛠 Troubleshooting
@@ -472,18 +561,25 @@ choosing the right tool and making either one a first-class citizen of the deliv
 | `check_slas.py`: `ModuleNotFoundError: yaml` | `pip install -r requirements.txt` |
 | Leak gate says `only N samples` | Run longer (`LEAK_MINUTES`) — the trend fit needs at least 10 samples |
 | Grafana panels empty | Start a test first; the exporter only has data while Locust is running |
+| `pip install -r requirements.txt` fails on Python 3.9/3.10 | Locust requires 3.11+. The gate scripts don't — they only need `pip install PyYAML` |
+| Nightly stopped running by itself | GitHub disables cron in public repos after 60 days of inactivity: `gh workflow enable nightly.yml` |
 
 ## 🗺 Roadmap
 
-- [x] Nightly runs auto-compare against the previous nightly's artifact
+- [x] Nightly runs auto-compare against recent history (median of the last five)
+- [x] Memory-leak gate runs in CI, including a self-test that proves it still fires
+- [x] Real percentiles on the live dashboard
 - [ ] Open-workload-model scenario (`constant_throughput`) as a coordinated-omission cross-check
+- [ ] OpenTelemetry: Locust 2.42+ ships `--otel`, and ShopAPI spans correlated via `X-Session-ID`
+      would close the loop from load generator to server-side trace
+- [ ] `MarkovTaskSet` (Locust 2.38+) — probabilistic user journeys instead of a fixed funnel
 - [ ] k6 implementation of the same scenarios — tool-agnostic comparison
 - [ ] Kubernetes manifests / Helm chart for cloud-scale load generation
-- [ ] Distributed tracing on ShopAPI (OpenTelemetry) correlated via `X-Session-ID`
 
 ## 🧰 Tech stack
 
-Locust 2.x · Python · FastAPI · Docker Compose · Prometheus · Grafana · GitHub Actions · pytest
+Locust 2.46 · Python 3.12 · FastAPI · Docker Compose · Prometheus 3 · Grafana 12 · GitHub Actions ·
+pytest · ruff
 
 ## 👤 Author
 

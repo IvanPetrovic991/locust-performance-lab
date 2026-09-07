@@ -21,7 +21,7 @@ import hashlib
 import os
 import random
 import time
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -71,7 +71,7 @@ class CartItem(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    items: List[CartItem]
+    items: list[CartItem]
     payment_method: str = "card"
 
 

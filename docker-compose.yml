@@ -12,7 +12,7 @@ services:
       retries: 10
 
   locust-master:
-    image: locustio/locust:2.32.4
+    image: locustio/locust:2.46.5
     ports:
       - "8089:8089"
     volumes:
@@ -31,7 +31,7 @@ services:
         condition: service_healthy
 
   locust-worker:
-    image: locustio/locust:2.32.4
+    image: locustio/locust:2.46.5
     volumes:
       - ./locustfiles:/mnt/locust:ro
     environment:
@@ -48,16 +48,22 @@ services:
 
   # --- optional live monitoring: docker compose --profile monitoring up -d ---
 
+  # Turns the master's live JSON stats into Prometheus metrics, percentiles
+  # included. Stdlib-only, so it needs no image of its own — see the module
+  # docstring for why the off-the-shelf exporter was dropped.
   locust-exporter:
-    image: containersol/locust_exporter:v0.5.0
+    image: python:3.12-slim
     profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/locust_exporter.py:/app/locust_exporter.py:ro
     environment:
-      - LOCUST_EXPORTER_URI=http://locust-master:8089
+      - LOCUST_URI=http://locust-master:8089
+    command: ["python", "/app/locust_exporter.py"]
     depends_on:
       - locust-master
 
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v3.13.2
     profiles: ["monitoring"]
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -65,7 +71,7 @@ services:
       - "9090:9090"
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:12.4.10
     profiles: ["monitoring"]
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true

@@ -1,0 +1,191 @@
+# Continuous performance testing: the checks that need history or time, and
+# therefore cannot live in the per-commit pipeline.
+#
+#   trend        — a longer run compared against the MEDIAN of recent nightlies
+#   memory-leak  — a soak-lite run through the leak gate, plus a self-test that
+#                  proves the gate still fires on a deliberately leaking build
+#
+# Note on GitHub's schedule: a cron trigger in a public repository is disabled
+# automatically after 60 days without repository activity, and re-enabling it
+# is a manual action (`gh workflow enable nightly.yml`). See the CI section of
+# the README — this is documented rather than worked around, because the
+# usual workaround is a bot committing noise to keep a timer alive.
+name: Nightly performance
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read   # read previous nightly artifacts to build the baseline
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  trend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start target API
+        run: |
+          docker compose up -d --build --wait target-api || {
+            echo "::error::target-api failed its healthcheck — container logs follow"
+            docker compose logs target-api
+            exit 1
+          }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Locust
+        run: pip install -r requirements.txt
+
+      - name: Run load test
+        run: |
+          mkdir -p reports
+          locust -f locustfiles/ecommerce.py \
+            --headless \
+            --host http://localhost:8000 \
+            -u 50 -r 10 -t 5m \
+            --csv reports/ci --csv-full-history \
+            --html reports/ci.html \
+            --only-summary \
+            --exit-code-on-error 0
+
+      - name: SLA gate
+        run: python scripts/check_slas.py reports/ci_stats.csv
+
+      # Collect the last few nightlies REGARDLESS of their conclusion. Taking
+      # only successful runs would ratchet the baseline towards the fastest
+      # night ever recorded, and every ordinary night after it would read as a
+      # regression — which is exactly how this gate used to behave.
+      - name: Collect recent nightlies as a baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p baselines
+          collected=0
+          for id in $(gh run list --workflow nightly.yml --event schedule \
+                        --status completed --limit 12 \
+                        --json databaseId --jq '.[].databaseId'); do
+            [ "$id" = "${{ github.run_id }}" ] && continue
+            if gh run download "$id" --name nightly-reports --dir "baselines/$id" 2>/dev/null; then
+              collected=$((collected + 1))
+              echo "baseline: run $id"
+            fi
+            [ "$collected" -ge 5 ] && break
+          done
+          echo "COLLECTED=$collected" >> "$GITHUB_ENV"
+
+      # Tolerances are wider than the local defaults on purpose: a hosted
+      # runner is shared, noisy hardware. The median baseline removes the
+      # noise from the reference, but the run being judged is still a single
+      # sample, so the gate is set to catch real regressions (a doubling, an
+      # error spike) rather than to resolve a few percent.
+      - name: Regression gate vs recent nightlies
+        if: env.COLLECTED != '0'
+        run: |
+          python scripts/compare_runs.py \
+            baselines/*/ci_stats.csv \
+            reports/ci_stats.csv \
+            --p95-tolerance-pct 35 \
+            --rps-tolerance-pct 25 \
+            --error-rate-tolerance-pp 2.0 \
+            --min-requests 50
+
+      - name: Note missing history
+        if: env.COLLECTED == '0'
+        run: |
+          echo "No previous nightly artifacts available yet — no trend to compare." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-reports
+          path: reports/
+          retention-days: 30
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  memory-leak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Locust
+        run: pip install -r requirements.txt
+
+      - name: Start target API
+        run: docker compose up -d --build --wait target-api
+
+      # The real gate: constant load, sample the container's memory, fail if
+      # the trend says the service is leaking.
+      - name: Memory-leak gate
+        run: |
+          mkdir -p reports
+          CID=$(docker compose ps -q target-api)
+          python scripts/memory_monitor.py --container "$CID" \
+            --interval 5 --output reports/memory.csv &
+          MONITOR_PID=$!
+          locust -f locustfiles/ecommerce.py --headless \
+            --host http://localhost:8000 \
+            -u 30 -r 10 -t 4m \
+            --csv reports/leak --only-summary --exit-code-on-error 0
+          kill $MONITOR_PID 2>/dev/null || true
+          python scripts/check_memory_leak.py reports/memory.csv
+
+      # Don't trust a detector you have never seen catch anything. ShopAPI can
+      # be told to leak on demand; if the gate stays quiet on that build, the
+      # gate itself is broken and every green night above it was meaningless.
+      - name: Prove the gate still catches a real leak
+        run: |
+          docker compose down -v
+          SIMULATE_MEMORY_LEAK=true docker compose up -d --build --wait target-api
+          CID=$(docker compose ps -q target-api)
+          python scripts/memory_monitor.py --container "$CID" \
+            --interval 5 --output reports/memory-leaking.csv &
+          MONITOR_PID=$!
+          locust -f locustfiles/ecommerce.py --headless \
+            --host http://localhost:8000 \
+            -u 30 -r 10 -t 3m \
+            --csv reports/leaking --only-summary --exit-code-on-error 0
+          kill $MONITOR_PID 2>/dev/null || true
+          if python scripts/check_memory_leak.py reports/memory-leaking.csv; then
+            echo "::error::the leak gate did not fire on a deliberately leaking build"
+            exit 1
+          fi
+          echo "Leak gate fired on the leaking build, as it should."
+          echo "✅ Leak gate self-test passed: the detector caught the seeded leak." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload memory reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-memory
+          path: reports/
+          retention-days: 30
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

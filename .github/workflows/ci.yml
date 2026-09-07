@@ -1,11 +1,14 @@
-name: Load Test
+# This workflow carries the README badge, so it only contains checks whose
+# verdict is deterministic: linting, the gate scripts' unit tests, and a load
+# test judged against the absolute budgets in config/slas.yml. Run-over-run
+# trend comparison lives in nightly.yml, because a gate that compares two noisy
+# samples belongs nowhere near a badge.
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "0 2 * * *"   # nightly run — continuous performance testing
   workflow_dispatch:
     inputs:
       users:
@@ -17,13 +20,24 @@ on:
 
 permissions:
   contents: read
-  actions: read   # download the previous nightly's artifact for regression comparison
 
 concurrency:
-  group: load-test-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+
   # The gate scripts decide pass/fail for every load test — so they get their
   # own unit-test job. Untested judges are worse than no judges.
   gate-tests:
@@ -35,6 +49,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
@@ -61,6 +76,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
       - name: Install Locust
         run: pip install -r requirements.txt
@@ -74,9 +90,9 @@ jobs:
           locust -f locustfiles/ecommerce.py \
             --headless \
             --host http://localhost:8000 \
-            -u "${{ github.event.inputs.users || '50' }}" \
+            -u "${{ inputs.users || '50' }}" \
             -r 10 \
-            -t "${{ github.event.inputs.duration || '2m' }}" \
+            -t "${{ inputs.duration || '2m' }}" \
             --csv reports/ci --csv-full-history \
             --html reports/ci.html \
             --only-summary \
@@ -85,30 +101,14 @@ jobs:
       - name: SLA gate
         run: python scripts/check_slas.py reports/ci_stats.csv
 
-      - name: Regression gate vs previous nightly
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          prev=$(gh run list --workflow load-test.yml --status success --event schedule \
-                 --limit 1 --json databaseId --jq '.[0].databaseId' || true)
-          if [ -z "$prev" ] || [ "$prev" = "null" ]; then
-            echo "No previous successful nightly run — skipping regression comparison."
-            exit 0
-          fi
-          if ! gh run download "$prev" --name load-test-reports --dir baseline; then
-            echo "Previous nightly has no report artifact — skipping regression comparison."
-            exit 0
-          fi
-          python scripts/compare_runs.py baseline/ci_stats.csv reports/ci_stats.csv
-
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: load-test-reports
+          name: ci-reports
           path: reports/
+          retention-days: 30
 
       - name: Tear down
         if: always()
-        run: docker compose down
+        run: docker compose down -v

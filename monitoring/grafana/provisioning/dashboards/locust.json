@@ -44,18 +44,18 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Avg response time (ms) by endpoint",
+      "title": "p95 response time (ms) by endpoint",
       "gridPos": { "x": 12, "y": 6, "w": 12, "h": 9 },
-      "targets": [{ "expr": "locust_requests_avg_response_time{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A" }]
+      "targets": [{ "expr": "locust_requests_p95_response_time{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A" }]
     },
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Response time vs load (ms)",
+      "title": "Latency percentiles vs load",
       "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
       "targets": [
-        { "expr": "locust_requests_avg_response_time{name=\"Aggregated\"}", "legendFormat": "avg", "refId": "A" },
-        { "expr": "locust_requests_median_response_time{name=\"Aggregated\"}", "legendFormat": "median", "refId": "B" },
+        { "expr": "locust_requests_current_p50_response_time", "legendFormat": "p50 (10s window)", "refId": "A" },
+        { "expr": "locust_requests_current_p95_response_time", "legendFormat": "p95 (10s window)", "refId": "B" },
         { "expr": "locust_users", "legendFormat": "active users", "refId": "C" }
       ]
     },

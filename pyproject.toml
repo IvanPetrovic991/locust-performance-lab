@@ -1,0 +1,37 @@
+# Tooling configuration only — this repository is a test suite and a set of
+# CI gates, not a distributable package.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+# The gate scripts are run with whatever python3 the host has, including the
+# 3.9 that still ships with macOS — keep them free of newer syntax. Locust
+# itself needs 3.11+, but it runs in a container or its own venv.
+target-version = "py39"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Locust discovers user classes by importing the module; the shape classes are
+# defined conditionally at import time and are never referenced by name.
+"locustfiles/*.py" = ["B008"]
+# ShopAPI only ever runs on the 3.12 image, so it may use modern annotations.
+"target_app/*.py" = ["UP006", "UP035"]
+
+# `ruff format` is deliberately not enforced. The formatting here is hand-tuned
+# for readability (aligned keyword arguments, grouped parametrize cases) and
+# the default formatter expands several of those into strictly worse layouts.
+# Linting catches defects; style is reviewed by a human.
