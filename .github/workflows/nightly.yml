@@ -73,18 +73,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p baselines
-          collected=0
-          for id in $(gh run list --workflow nightly.yml --event schedule \
-                        --status completed --limit 12 \
+          for id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow nightly.yml \
+                        --event schedule --status completed --limit 12 \
                         --json databaseId --jq '.[].databaseId'); do
-            [ "$id" = "${{ github.run_id }}" ] && continue
-            if gh run download "$id" --name nightly-reports --dir "baselines/$id" 2>/dev/null; then
-              collected=$((collected + 1))
-              echo "baseline: run $id"
+            if [ "$id" != "$GITHUB_RUN_ID" ]; then
+              gh run download "$id" --repo "$GITHUB_REPOSITORY" \
+                --name nightly-reports --dir "baselines/$id" 2>/dev/null \
+                && echo "baseline: run $id"
             fi
-            [ "$collected" -ge 5 ] && break
+            # count usable files, not successful downloads: an artifact from a
+            # run that died before writing its CSV would otherwise be counted
+            # and then break the glob below
+            usable=$(ls baselines/*/ci_stats.csv 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$usable" -ge 5 ]; then break; fi
           done
-          echo "COLLECTED=$collected" >> "$GITHUB_ENV"
+          usable=$(ls baselines/*/ci_stats.csv 2>/dev/null | wc -l | tr -d ' ')
+          echo "Collected $usable usable baseline runs."
+          echo "COLLECTED=$usable" >> "$GITHUB_ENV"
 
       # Tolerances are wider than the local defaults on purpose: a hosted
       # runner is shared, noisy hardware. The median baseline removes the
