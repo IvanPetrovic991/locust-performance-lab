@@ -7,71 +7,80 @@
   "panels": [
     {
       "id": 1,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "stat",
       "title": "Active Users",
       "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
-      "targets": [{ "expr": "locust_users", "refId": "A" }]
+      "targets": [{ "expr": "locust_users", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }]
     },
     {
       "id": 2,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "stat",
       "title": "Current RPS",
       "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
-      "targets": [{ "expr": "locust_requests_current_rps{name=\"Aggregated\"}", "refId": "A" }]
+      "targets": [{ "expr": "locust_requests_current_rps{name=\"Aggregated\"}", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }]
     },
     {
       "id": 3,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "stat",
       "title": "Failures/s",
       "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
-      "targets": [{ "expr": "locust_requests_current_fail_per_sec{name=\"Aggregated\"}", "refId": "A" }],
+      "targets": [{ "expr": "locust_requests_current_fail_per_sec{name=\"Aggregated\"}", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }],
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
     },
     {
       "id": 4,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "stat",
       "title": "Total Requests",
       "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
-      "targets": [{ "expr": "sum(locust_requests_num_requests{name=\"Aggregated\"})", "refId": "A" }]
+      "targets": [{ "expr": "sum(locust_requests_num_requests{name=\"Aggregated\"})", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }]
     },
     {
       "id": 5,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "timeseries",
       "title": "Throughput (RPS) by endpoint",
       "gridPos": { "x": 0, "y": 6, "w": 12, "h": 9 },
-      "targets": [{ "expr": "locust_requests_current_rps{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A" }]
+      "targets": [{ "expr": "locust_requests_current_rps{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }]
     },
     {
       "id": 6,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "timeseries",
       "title": "p95 response time (ms) by endpoint",
       "gridPos": { "x": 12, "y": 6, "w": 12, "h": 9 },
-      "targets": [{ "expr": "locust_requests_p95_response_time{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A" }]
+      "targets": [{ "expr": "locust_requests_p95_response_time{name!=\"Aggregated\"}", "legendFormat": "{{method}} {{name}}", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }]
     },
     {
       "id": 7,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "timeseries",
       "title": "Latency percentiles vs load",
       "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
       "targets": [
-        { "expr": "locust_requests_current_p50_response_time", "legendFormat": "p50 (10s window)", "refId": "A" },
-        { "expr": "locust_requests_current_p95_response_time", "legendFormat": "p95 (10s window)", "refId": "B" },
-        { "expr": "locust_users", "legendFormat": "active users", "refId": "C" }
+        { "expr": "locust_requests_current_p50_response_time", "legendFormat": "p50 (10s window)", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "locust_requests_current_p95_response_time", "legendFormat": "p95 (10s window)", "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "locust_users", "legendFormat": "active users", "refId": "C", "datasource": { "type": "prometheus", "uid": "prometheus" } }
       ]
     },
     {
       "id": 8,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "timeseries",
       "title": "Failures/s over time",
       "gridPos": { "x": 12, "y": 15, "w": 12, "h": 8 },
-      "targets": [{ "expr": "locust_requests_current_fail_per_sec{name=\"Aggregated\"}", "legendFormat": "failures/s", "refId": "A" }]
+      "targets": [{ "expr": "locust_requests_current_fail_per_sec{name=\"Aggregated\"}", "legendFormat": "failures/s", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }]
     },
     {
       "id": 9,
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "type": "timeseries",
       "title": "Target memory usage (leak hunting)",
       "gridPos": { "x": 0, "y": 23, "w": 24, "h": 8 },
-      "targets": [{ "expr": "process_resident_memory_bytes{job=\"shopapi\"}", "legendFormat": "target-api RSS", "refId": "A" }],
+      "targets": [{ "expr": "process_resident_memory_bytes{job=\"shopapi\"}", "legendFormat": "target-api RSS", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }],
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
     }
   ],

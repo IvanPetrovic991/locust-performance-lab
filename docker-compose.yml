@@ -76,9 +76,20 @@ services:
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      # only used by `make dashboard-png`; harmless when the renderer is down
+      - GF_RENDERING_SERVER_URL=http://grafana-renderer:8081/render
+      - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "3000:3000"
     depends_on:
       - prometheus
+
+  # Server-side dashboard rendering, for `make dashboard-png`: a snapshot to
+  # attach to a ticket, or to regenerate this repo's README screenshots.
+  # Its own profile because it pulls a headless-Chrome image that a normal
+  # `make monitoring` has no use for.
+  grafana-renderer:
+    image: grafana/grafana-image-renderer:v5.12.2
+    profiles: ["report"]

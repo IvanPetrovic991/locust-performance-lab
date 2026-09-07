@@ -1,4 +1,4 @@
-.PHONY: up down clean smoke baseline current stress spike soak leak-test check compare monitoring
+.PHONY: up down clean smoke baseline current stress spike soak leak-test check compare monitoring dashboard-png
 
 # Number of Locust worker containers — scale load generation horizontally,
 # e.g. `make up WORKERS=8`
@@ -22,7 +22,7 @@ monitoring:
 	$(COMPOSE) --profile monitoring up -d --build --scale locust-worker=$(WORKERS)
 
 down:
-	$(COMPOSE) --profile monitoring down
+	$(COMPOSE) --profile monitoring --profile report down
 
 clean: down
 	rm -rf reports/*.csv reports/*.html
@@ -88,6 +88,18 @@ leak-test:
 ## Re-run the SLA gate against the last baseline report
 check:
 	python3 scripts/check_slas.py reports/baseline_stats.csv
+
+## Snapshot the live Grafana dashboard to a PNG (needs `make monitoring` up).
+## Grafana renders it server-side, so it works headless — in CI, or over SSH.
+DASHBOARD_PNG ?= reports/dashboard.png
+DASHBOARD_MINUTES ?= 15
+dashboard-png:
+	$(COMPOSE) --profile report up -d grafana-renderer
+	@echo "waiting for the renderer..."
+	@until curl -sf http://localhost:3000/api/health >/dev/null; do sleep 2; done
+	curl -sf --max-time 90 -o $(DASHBOARD_PNG) \
+		"http://localhost:3000/render/d/locust-perf-lab/locust-load-test?kiosk&from=now-$(DASHBOARD_MINUTES)m&to=now&width=1600&height=1250&timeout=60"
+	@echo "wrote $(DASHBOARD_PNG)"
 
 ## Detect regressions between two runs OF THE SAME PROFILE — comparing e.g.
 ## a 50-user baseline against a 10-user smoke is meaningless by construction.

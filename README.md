@@ -122,6 +122,10 @@ or watch the same run in Grafana with per-endpoint breakdowns and target memory.
 
 ![Locust web UI during a test](docs/images/locust-ui.png)
 
+Read the p95 column, not the average: `/search` averages 155 ms but its p95 is 740 ms — that's the
+15% of requests hitting a simulated cache miss, and it is invisible in the mean. `/checkout` shows
+its injected gateway failures in the `# Fails` column.
+
 ## 🧪 Test scenarios
 
 Each headless scenario produces CSV + HTML reports in `reports/` and runs the SLA gate
@@ -142,6 +146,9 @@ Every run also writes an interactive HTML report (`reports/<scenario>.html`) wit
 latency percentiles and failures over time — the artifact you attach to a ticket.
 
 ![Locust charts during a distributed run](docs/images/locust-charts.png)
+
+A stepped ramp across three workers: throughput tracks the user count, p50 stays flat at ~40 ms,
+and p95 does not — the tail is where saturation shows up first.
 
 ## 👥 Workload model
 
@@ -355,6 +362,16 @@ dashboard (`http://localhost:3000`, no login needed) shows:
 This is the same setup you'd use to watch a production load test: no waiting for the final
 report, problems are visible the moment they start.
 
+A dashboard is also evidence, so it can be exported without a human at a keyboard:
+
+```bash
+make dashboard-png                          # -> reports/dashboard.png
+make dashboard-png DASHBOARD_MINUTES=60     # a longer window, e.g. after a soak
+```
+
+Grafana renders it server-side, so this works over SSH and in CI — attach the PNG to the ticket
+next to the CSV. The screenshots in this README are produced by that target.
+
 ### A dashboard that reads zero is worse than no dashboard
 
 [`monitoring/locust_exporter.py`](monitoring/locust_exporter.py) is ~70 lines of stdlib Python
@@ -546,7 +563,7 @@ choosing the right tool and making either one a first-class citizen of the deliv
 ├── .github/workflows/ci.yml     # lint + gate tests + load test on every push/PR
 ├── .github/workflows/nightly.yml# trend comparison + memory-leak gate
 ├── .github/dependabot.yml       # weekly pin refresh, load-tested before merge
-├── docker-compose.yml           # SUT + distributed Locust + monitoring profile
+├── docker-compose.yml           # SUT + distributed Locust + monitoring/report profiles
 ├── pyproject.toml               # ruff + pytest configuration
 ├── docs/images/                 # screenshots used in this README
 └── Makefile                     # one-command scenarios
